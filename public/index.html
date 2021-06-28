@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pool</title>
+    <style>
+      #canvas {
+        background-color: lime;
+
+        position: fixed;
+        left: 50%;
+        top: 2%;
+        transform: translate(-50%);
+      }
+      #instructions {
+        position: fixed;
+        left: 50%;
+        bottom: 8%;
+        width: 100%;
+        text-align: center;
+        transform: translate(-50%);
+      }
+    </style>
+    <script src="/socket.io/socket.io.js"></script>
+  </head>
+
+  <body>
+    <canvas id="canvas"></canvas>
+    <h1 id="instructions">WAITING FOR OPONNENT...</h1>
+
+    <script>
+      //Setting up canvas
+      let canvas = document.getElementById("canvas");
+      let c = canvas.getContext("2d");
+
+      //Pool table size and constants
+      const PI2 = Math.PI * 2;
+      const TABLE_SCALE = 3.8;
+      const K = 0.9 * TABLE_SCALE; //0.8
+      const FRICTION = 0.3 * TABLE_SCALE;
+      const VEL_SCALE = (22 / 3.8) * TABLE_SCALE;
+
+      canvas.width = 262 * TABLE_SCALE;
+      canvas.height = 150 * TABLE_SCALE;
+      let tableSpacing = 19 * TABLE_SCALE;
+
+      let tableCorner = {
+        left: tableSpacing,
+        right: canvas.width - tableSpacing,
+        top: tableSpacing,
+        bottom: canvas.height - tableSpacing,
+      };
+
+      //Walls
+      function drawTableSpacing() {
+        c.fillStyle = "#964B00";
+        c.fillRect(0, 0, canvas.width, tableSpacing);
+        c.fillRect(0, tableCorner.bottom, canvas.width, tableSpacing);
+        c.fillRect(0, 0, tableSpacing, canvas.height);
+        c.fillRect(tableCorner.right, 0, tableSpacing, canvas.height);
+      }
+
+      //Holes
+      class Hole {
+        constructor(x, y) {
+          this.x = x;
+          this.y = y;
+          this.r = 6.35 * TABLE_SCALE;
+        }
+        draw() {
+          c.fillStyle = "black";
+          c.beginPath();
+          c.arc(this.x, this.y, this.r, 0, PI2);
+          c.fill();
+        }
+      }
+
+      let holes = [];
+
+      //Top
+      holes.push(new Hole(tableSpacing * 0.95, tableSpacing * 0.95));
+      holes.push(new Hole(canvas.width / 2, tableSpacing * 0.79));
+      holes.push(
+        new Hole(canvas.width - tableSpacing * 0.95, tableSpacing * 0.95)
+      );
+      //Bottom
+      holes.push(
+        new Hole(tableSpacing * 0.95, canvas.height - tableSpacing * 0.95)
+      );
+      holes.push(
+        new Hole(canvas.width / 2, canvas.height - tableSpacing * 0.79)
+      );
+      holes.push(
+        new Hole(
+          canvas.width - tableSpacing * 0.95,
+          canvas.height - tableSpacing * 0.95
+        )
+      );
+
+      //Determine Turn
+      let myTurn = false;
+
+      //Ball
+      const BALL_SIZE = 3.3 * TABLE_SCALE;
+
+      //Ball
+      class Ball {
+        constructor(x, y, eight = false, color = true) {
+          this.x = x;
+          this.y = y;
+          this.r = BALL_SIZE;
+          this.mass = 0.5;
+
+          this.eight = eight;
+          this.white = false;
+          this.onTable = true;
+
+          this.vel = 0;
+          this.orientation = 0;
+
+          this.color = color ? "blue" : "red";
+        }
+        move() {
+          this.dx = this.vel * Math.cos(this.orientation);
+          this.dy = this.vel * Math.sin(this.orientation);
+
+          this.x += this.dx;
+          this.y += this.dy;
+
+          this.vel -= FRICTION / VEL_SCALE;
+
+          if (this.vel < 0) {
+            this.vel = 0;
+          }
+        }
+        update() {
+          if (!this.onTable) return;
+          this.move();
+
+          this.ballCollision();
+          this.wallCollision();
+
+          if (this.holeCollision() && this.onTable) {
+            this.inHole();
+          }
+        }
+        ballCollision() {
+          balls.forEach((ball) => {
+            if (!ball.onTable || ball == this) return;
+
+            //Check collision
+            if (
+              Math.hypot(this.x - ball.x, this.y - ball.y) <
+              ball.r + this.r
+            ) {
+              let oriVel = this.vel;
+              let oriOrientation = this.orientation;
+
+              let contactAngle = Math.atan2(ball.y - this.y, ball.x - this.x);
+              let tangentLineAngle = contactAngle - Math.PI;
+
+              let triangleAngle = oriOrientation - tangentLineAngle;
+
+              //me
+              this.orientation = tangentLineAngle;
+
+              let myNewVelX =
+                (Math.cos(contactAngle) *
+                  (2 *
+                    ball.mass *
+                    ball.vel *
+                    Math.cos(ball.orientation - contactAngle))) /
+                  (this.mass + ball.mass) +
+                oriVel *
+                  Math.sin(oriOrientation - contactAngle) *
+                  Math.cos(contactAngle + Math.PI / 2);
+              let myNewVelY =
+                (Math.sin(contactAngle) *
+                  (2 *
+                    ball.mass *
+                    ball.vel *
+                    Math.cos(ball.orientation - contactAngle))) /
+                  (this.mass + ball.mass) +
+                oriVel *
+                  Math.sin(oriOrientation - contactAngle) *
+                  Math.sin(contactAngle + Math.PI / 2);
+
+              //this.orientation = Math.atan2(myNewVelY, myNewVelX);
+              this.vel = Math.hypot(myNewVelX, myNewVelY); //
+
+              this.x -= this.dx;
+              this.y -= this.dy;
+
+              //other
+              ball.orientation = contactAngle;
+              contactAngle = Math.atan2(this.y - ball.y, this.x - ball.x);
+
+              let otherVelX =
+                (Math.cos(contactAngle) *
+                  (2 *
+                    this.mass *
+                    oriVel *
+                    Math.cos(oriOrientation - contactAngle))) /
+                  (this.mass + ball.mass) +
+                this.vel *
+                  Math.sin(ball.orientation - contactAngle) *
+                  Math.cos(contactAngle + Math.PI / 2);
+              let otherVelY =
+                (Math.sin(contactAngle) *
+                  (2 *
+                    this.mass *
+                    oriVel *
+                    Math.cos(oriOrientation - contactAngle))) /
+                  (this.mass + ball.mass) +
+                this.vel *
+                  Math.sin(ball.orientation - contactAngle) *
+                  Math.sin(contactAngle + Math.PI / 2);
+
+              ball.vel = Math.hypot(otherVelX, otherVelY);
+
+              this.vel = Math.round(this.vel * 1000) / 1000;
+              this.ball = Math.round(this.ball * 1000) / 1000;
+            }
+          });
+        }
+        wallCollision() {
+          if (
+            this.y - this.r <= tableCorner.top ||
+            this.y + this.r >= tableCorner.bottom
+          ) {
+            this.orientation = Math.atan2(-this.dy, this.dx);
+          }
+          if (
+            this.x - this.r <= tableCorner.left ||
+            this.x + this.r >= tableCorner.right
+          ) {
+            this.orientation = Math.atan2(this.dy, -this.dx);
+          }
+
+          if (this.y - this.r <= tableCorner.top)
+            this.y = tableCorner.top + this.r;
+          else if (this.y + this.r >= tableCorner.bottom)
+            this.y = tableCorner.bottom - this.r;
+          if (this.x - this.r <= tableCorner.left)
+            this.x = tableCorner.left + this.r;
+          else if (this.x + this.r >= tableCorner.right)
+            this.x = tableCorner.right - this.r;
+        }
+        holeCollision() {
+          return holes.some((hole) => {
+            return (
+              Math.hypot(hole.x - this.x, hole.y - this.y) <
+              (hole.r + this.r) * 0.95
+            );
+          });
+        }
+        inHole() {
+          this.onTable = false;
+          this.vel = 0;
+        }
+        draw() {
+          if (!this.onTable) return;
+
+          if (this.eight) {
+            c.fillStyle = "black";
+            c.beginPath();
+            c.arc(this.x, this.y, this.r, 0, PI2);
+            c.fill();
+            c.fillStyle = "white";
+            c.beginPath();
+            c.arc(this.x, this.y, this.r / 2, 0, PI2);
+            c.fill();
+
+            c.textAlign = "center";
+            c.textBaseline = "middle";
+            c.fillStyle = "black";
+            c.fillText("8", this.x, this.y);
+          } else {
+            c.fillStyle = this.color;
+            c.beginPath();
+            c.arc(this.x, this.y, this.r, 0, PI2);
+            c.fill();
+          }
+        }
+      }
+      //White ball
+      class WhiteBall extends Ball {
+        constructor(x, y) {
+          super(x, y);
+          this.white = true;
+        }
+        draw() {
+          if (!this.onTable) return;
+          c.fillStyle = "white";
+          c.beginPath();
+          c.arc(this.x, this.y, this.r, 0, PI2);
+          c.fill();
+        }
+        setStart() {
+          this.onTable = true;
+          this.vel = 0;
+          this.x = canvas.width * 0.25;
+          this.y = canvas.height * 0.5;
+        }
+      }
+      let balls = [];
+
+      //Launching
+      function drawLaunchAnimation(mouseData) {
+        if (!mouseData.isLaunching) return;
+
+        let lineLength = calculateVel(mouseData);
+
+        c.lineWidth = 5 + calculateVel(mouseData) / 50;
+        c.strokeStyle = "white";
+        c.globalAlpha = 0.75;
+
+        let ballX = balls[0].x;
+        let ballY = balls[0].y;
+
+        let angle = Math.atan2(mouseData.y - ballY, mouseData.x - ballX);
+        angle += Math.PI;
+
+        c.beginPath();
+        c.moveTo(ballX, ballY);
+        c.lineTo(
+          lineLength * Math.cos(angle) + ballX,
+          lineLength * Math.sin(angle) + ballY
+        );
+        c.stroke();
+
+        c.lineWidth = 1;
+        c.globalAlpha = 1;
+      }
+
+      function calculateVel(mouseData) {
+        let distance =
+          Math.hypot(mouseData.x - balls[0].x, mouseData.y - balls[0].y) -
+          BALL_SIZE;
+        let max = canvas.height * 0.2;
+
+        if (distance > max) distance = max;
+        if (distance < 0) distance = 0;
+
+        distance *= K;
+        return distance;
+      }
+      function launch(mouseData) {
+        balls[0].vel = calculateVel(mouseData) / VEL_SCALE;
+        balls[0].orientation =
+          Math.atan2(mouseData.y - balls[0].y, mouseData.x - balls[0].x) +
+          Math.PI;
+
+        //Dont forget to cummunicate
+      }
+
+      //Mouse Events
+      let mouse = {
+        x: 0,
+        y: 0,
+        isPressed: false,
+        isLaunching: false,
+      };
+
+      canvas.addEventListener("mousedown", (e) => {
+        mouse.isPressed = true;
+
+        if (
+          myTurn &&
+          Math.hypot(mouse.x - balls[0].x, mouse.y - balls[0].y) < BALL_SIZE
+        ) {
+          mouse.isLaunching = true;
+          console.log("launching");
+        }
+      });
+      canvas.addEventListener("mouseup", (e) => {
+        mouse.isPressed = false;
+
+        if (
+          mouse.isLaunching &&
+          Math.hypot(mouse.x - balls[0].x, mouse.y - balls[0].y) > BALL_SIZE
+        ) {
+          launch(mouse);
+          //Send Data
+          socket.emit("launchBall", mouse, profile);
+          myTurn = false;
+
+          //Dont forget to switch turns THERE
+          eventualTurnSwitch = true;
+        }
+        mouse.isLaunching = false;
+        socket.emit("launching", mouse, profile);
+      });
+      canvas.addEventListener("mousemove", (e) => {
+        let rect = canvas.getBoundingClientRect();
+        mouse.x =
+          ((e.clientX - rect.left) / (rect.right - rect.left)) * canvas.width;
+        mouse.y =
+          ((e.clientY - rect.top) / (rect.bottom - rect.top)) * canvas.height;
+      });
+
+      //Other balls
+      function otherBallsMoving() {
+        return balls.some((ball) => {
+          return ball.vel != 0;
+        });
+      }
+
+      function respawn() {
+        if (!balls[0].onTable && !otherBallsMoving()) {
+          balls[0].setStart();
+        }
+      }
+
+      //Set balls
+      function setBalls100() {
+        balls[0] = new WhiteBall(300, 300);
+        balls[0].setStart();
+        balls.push(new Ball(canvas.width * 0.55, canvas.height * 0.5, false));
+        for (let i = 0; i < 100; i++) {
+          balls.push(
+            new Ball(
+              canvas.width * Math.random(),
+              canvas.height * Math.random(),
+              false,
+              Math.random() > 0.5
+            )
+          );
+          let b = balls[balls.length - 1];
+          b.wallCollision();
+          if (
+            balls.some((ball) => {
+              return (
+                Math.hypot(ball.x - b.x, ball.y - b.y) < ball.r + b.r &&
+                ball != b
+              );
+            })
+          ) {
+            balls.pop();
+          }
+        }
+      }
+
+      function setBalls() {
+        balls[0] = new WhiteBall(300, 300);
+        balls[0].setStart();
+
+        balls.push(
+          new Ball(canvas.width * 0.55, canvas.height * 0.5, false, false)
+        );
+
+        balls.push(
+          new Ball(canvas.width * 0.58, canvas.height * 0.47, false, false)
+        );
+        balls.push(
+          new Ball(canvas.width * 0.58, canvas.height * 0.53, false, true)
+        );
+
+        balls.push(
+          new Ball(canvas.width * 0.61, canvas.height * 0.44, false, true)
+        );
+        balls.push(
+          new Ball(canvas.width * 0.61, canvas.height * 0.5, true, false)
+        ); //Eight
+        balls.push(
+          new Ball(canvas.width * 0.61, canvas.height * 0.56, false, false)
+        );
+
+        balls.push(
+          new Ball(canvas.width * 0.64, canvas.height * 0.41, false, false)
+        );
+        balls.push(
+          new Ball(canvas.width * 0.64, canvas.height * 0.47, false, true)
+        );
+        balls.push(
+          new Ball(canvas.width * 0.64, canvas.height * 0.53, false, true)
+        );
+        balls.push(
+          new Ball(canvas.width * 0.64, canvas.height * 0.59, false, false)
+        );
+
+        balls.push(
+          new Ball(canvas.width * 0.67, canvas.height * 0.38, false, false)
+        );
+        balls.push(
+          new Ball(canvas.width * 0.67, canvas.height * 0.44, false, true)
+        );
+        balls.push(
+          new Ball(canvas.width * 0.67, canvas.height * 0.5, false, false)
+        );
+        balls.push(
+          new Ball(canvas.width * 0.67, canvas.height * 0.56, false, true)
+        );
+        balls.push(
+          new Ball(canvas.width * 0.67, canvas.height * 0.62, false, true)
+        );
+      }
+      setBalls();
+    </script>
+
+    <script src="index.js"></script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "pool",
+  "version": "1.0.0",
+  "description": "pool physics yay",
+  "main": "server.js",
+  "dependencies": {
+    "express": "^4.17.1",
+    "socket.io": "^4.1.2"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "start": "nodemon -L server.js",
+    "nodemon": "nodemon server.js"
+  },
+  "nodemonConfig": {
+    "watch": [
+      "server"
+    ]
+  },
+  "author": "",
+  "license": "ISC"
+}
